@@ -2,7 +2,7 @@
   "want": "python, AI, data",
   "dont_want": "recruiting agent, third-party job boards",
   "location": "Europe, UK",
-  "result_count": "5",
+  "result_count": "10",
   "want_tags": [
     "python",
     "AI",
@@ -14,6 +14,8 @@
   ],
   "ignored_sites": [
     "careers.microsoft.com",
-    "careers.salesforce.com"
+    "careers.salesforce.com",
+    "en-gb.newsroom.workday.com",
+    "boards.greenhouse.io"
   ]
 }

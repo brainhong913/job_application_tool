@@ -151,9 +151,10 @@ def read_recommendation_rows() -> list[dict[str, str]]:
     filtered_rows = [
         row for row in rows if is_official_job_url(row.get("official_url", ""), row.get("company", ""))
     ]
-    if len(filtered_rows) != len(rows):
-        write_rows(RECOMMENDATIONS_FILE, RECOMMENDATION_HEADERS, filtered_rows)
-    return filtered_rows
+    deduped_rows = dedupe_recommendation_rows(filtered_rows)
+    if len(deduped_rows) != len(rows):
+        write_rows(RECOMMENDATIONS_FILE, RECOMMENDATION_HEADERS, deduped_rows)
+    return deduped_rows
 
 
 def load_saved_prompt() -> str:
@@ -270,7 +271,7 @@ def load_saved_filters() -> dict[str, str | list[str]]:
             "want": "",
             "dont_want": "",
             "location": "",
-            "result_count": "5",
+            "result_count": "10",
             "want_tags": [],
             "dont_want_tags": [],
             "ignored_sites": [],
@@ -279,7 +280,11 @@ def load_saved_filters() -> dict[str, str | list[str]]:
     want_tags = normalize_tag_values(payload.get("want_tags", payload.get("want", "")))
     dont_want_tags = normalize_tag_values(payload.get("dont_want_tags", payload.get("dont_want", "")))
     ignored_sites = normalize_tag_values(payload.get("ignored_sites", []))
-    result_count = str(payload.get("result_count", "5")).strip() or "5"
+    raw_result_count = str(payload.get("result_count", "10")).strip() or "10"
+    try:
+        result_count = str(max(10, min(30, int(raw_result_count))))
+    except ValueError:
+        result_count = "10"
     return {
         "want": ", ".join(want_tags),
         "dont_want": ", ".join(dont_want_tags),
@@ -304,11 +309,11 @@ def save_filters(
     existing_filters = load_saved_filters()
     saved_ignored_sites = existing_filters.get("ignored_sites", []) if ignored_sites is None else ignored_sites
     clean_ignored_sites = normalize_tag_values(saved_ignored_sites)
-    clean_result_count = str(result_count if result_count is not None else existing_filters.get("result_count", "5")).strip() or "5"
+    clean_result_count = str(result_count if result_count is not None else existing_filters.get("result_count", "10")).strip() or "10"
     try:
-        count_number = max(1, min(20, int(clean_result_count)))
+        count_number = max(10, min(30, int(clean_result_count)))
     except ValueError:
-        count_number = 5
+        count_number = 10
     payload = {
         "want": ", ".join(want_tags),
         "dont_want": ", ".join(dont_want_tags),
@@ -435,6 +440,39 @@ def normalize_job_key(company: str, role: str, url: str) -> str:
     return f"{company_part}|{role_part}|{url_part}"
 
 
+def normalize_company_name(company: str) -> str:
+    return re.sub(r"\W+", " ", (company or "").lower()).strip()
+
+
+def dedupe_recommendation_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    best_by_company: dict[str, tuple[int, int, int]] = {}
+    priority = {"Applied": 0, "Apply Later": 1, "New": 2, "Not Interested": 3}
+
+    for index, row in enumerate(rows):
+        company_key = normalize_company_name(row.get("company", ""))
+        if not company_key:
+            continue
+        status = (row.get("status") or "New").strip() or "New"
+        row_date = parse_date(row.get("date_added")) or date.min
+        score = (priority.get(status, 99), -row_date.toordinal(), index)
+        if company_key not in best_by_company or score < best_by_company[company_key]:
+            best_by_company[company_key] = score
+
+    kept_company_keys: set[str] = set()
+    deduped_rows: list[dict[str, str]] = []
+    for index, row in enumerate(rows):
+        company_key = normalize_company_name(row.get("company", ""))
+        if not company_key:
+            deduped_rows.append(row)
+            continue
+        _, _, best_index = best_by_company[company_key]
+        if index == best_index and company_key not in kept_company_keys:
+            kept_company_keys.add(company_key)
+            deduped_rows.append(row)
+
+    return deduped_rows
+
+
 def company_name_tokens(company: str) -> list[str]:
     tokens = re.findall(r"[a-z0-9]+", (company or "").lower())
     return [token for token in tokens if len(token) > 2 and token not in COMMON_COMPANY_WORDS]
@@ -463,6 +501,15 @@ def collect_existing_jobs(apps: list[dict[str, str]], recommendations: list[dict
             descriptions.append(f"{company} | {role} | {url or 'no-url'}")
 
     return keys, descriptions
+
+
+def collect_existing_companies(apps: list[dict[str, str]], recommendations: list[dict[str, str]]) -> set[str]:
+    companies: set[str] = set()
+    for row in [*apps, *recommendations]:
+        company_key = normalize_company_name(row.get("company", ""))
+        if company_key:
+            companies.add(company_key)
+    return companies
 
 
 def extract_output_text(payload: dict) -> str:
@@ -578,6 +625,7 @@ def fetch_ai_job_recommendations(
     result_count: int,
     seen_keys: set[str],
     seen_descriptions: list[str],
+    seen_companies: set[str],
 ) -> list[dict[str, str]]:
     api_key, model, _ = get_api_config()
     if not api_key:
@@ -596,7 +644,8 @@ def fetch_ai_job_recommendations(
         "- Avoid roles, industries, and work styles listed in the user's `Don't want` filters.\n"
         "- If a preferred location is provided, prioritize jobs in that location or remote roles compatible with it.\n"
         "- Avoid any company-role-url combination that already appears in the tracked list.\n"
-        f"- Return exactly {result_count} results when possible; if fewer real official matches exist, return only the available ones.\\n"
+        "- Do not repeat company names; return at most one role per company.\n"
+        f"- Return at least {result_count} unique companies when possible; if fewer real official matches exist, return only the available ones.\n"
         "- Keep each reason short and practical.\n"
         "- Focus on roles that match the user's prompt and look currently open."
     )
@@ -645,44 +694,79 @@ def fetch_ai_job_recommendations(
                 }
             }
         },
-        "max_output_tokens": 1400,
+        "max_output_tokens": 2400,
     }
 
-    request = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+    def run_responses_request(request_model: str) -> dict:
+        payload["model"] = request_model
+        request = urllib.request.Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
 
-    try:
-        with urllib.request.urlopen(request, timeout=90) as response:
-            response_payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"OpenAI API error {exc.code}: {detail[:400]}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"Network error while calling OpenAI: {exc.reason}") from exc
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"OpenAI API error {exc.code}: {detail[:400]}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Network error while calling OpenAI: {exc.reason}") from exc
 
-    jobs = [
-        item
-        for item in parse_jobs_from_response(extract_output_text(response_payload))
-        if is_official_job_url(item["official_url"], item.get("company", ""))
-    ]
-    if not jobs:
-        raise RuntimeError("OpenAI only returned third-party job-board links. Try again with a narrower prompt.")
+    def extract_filtered_jobs(response_payload: dict, request_model: str) -> list[dict[str, str]]:
+        try:
+            return [
+                item
+                for item in parse_jobs_from_response(extract_output_text(response_payload))
+                if is_official_job_url(item["official_url"], item.get("company", ""))
+            ]
+        except RuntimeError:
+            if request_model.startswith("gpt-5"):
+                try:
+                    fallback_payload = run_responses_request("gpt-4.1-mini")
+                    return [
+                        item
+                        for item in parse_jobs_from_response(extract_output_text(fallback_payload))
+                        if is_official_job_url(item["official_url"], item.get("company", ""))
+                    ]
+                except RuntimeError:
+                    return []
+            return []
 
     unique_jobs: list[dict[str, str]] = []
     known = set(seen_keys)
-    for item in jobs:
-        key = normalize_job_key(item["company"], item["role"], item["official_url"])
-        if key in known:
-            continue
-        known.add(key)
-        unique_jobs.append(item)
+    known_companies = set(seen_companies)
+    attempt_prompts = [
+        user_prompt + f"\n\nNeed at least {result_count} unique companies. Do not repeat any company.",
+        user_prompt + "\n\nBroaden the search to additional official company careers pages or official ATS links across Europe, the UK, and remote-friendly roles.",
+        user_prompt + "\n\nFind additional different companies not already mentioned, while still avoiding recruiters, aggregators, and third-party job boards.",
+    ]
+
+    for attempt_prompt in attempt_prompts:
+        payload["input"][1]["content"][0]["text"] = attempt_prompt
+        response_payload = run_responses_request(model)
+        jobs = extract_filtered_jobs(response_payload, model)
+        for item in jobs:
+            company_key = normalize_company_name(item.get("company", ""))
+            key = normalize_job_key(item["company"], item["role"], item["official_url"])
+            if key in known:
+                continue
+            if company_key and company_key in known_companies:
+                continue
+            known.add(key)
+            if company_key:
+                known_companies.add(company_key)
+            unique_jobs.append(item)
+            if len(unique_jobs) >= result_count:
+                return unique_jobs
+
+    if not unique_jobs:
+        raise RuntimeError("No valid official jobs were returned. Try a broader prompt or location.")
 
     return unique_jobs
 
@@ -692,7 +776,7 @@ def generate_recommendations(
     want: str = "",
     dont_want: str = "",
     location: str = "",
-    result_count: str = "5",
+    result_count: str = "10",
 ) -> tuple[int, str]:
     save_prompt(prompt)
     save_filters(want, dont_want, location, result_count=result_count)
@@ -700,14 +784,25 @@ def generate_recommendations(
     saved_filters = load_saved_filters()
     ignored_sites = {str(site).lower() for site in saved_filters.get("ignored_sites", [])}
     try:
-        target_count = max(1, min(20, int(str(result_count).strip() or saved_filters.get("result_count", "5"))))
+        target_count = max(10, min(30, int(str(result_count).strip() or saved_filters.get("result_count", "10"))))
     except ValueError:
-        target_count = 5
+        target_count = 10
     apps = read_rows(APPLICATIONS_FILE)
     existing_recommendations = read_recommendation_rows()
     seen_keys, seen_descriptions = collect_existing_jobs(apps, existing_recommendations)
+    seen_companies = collect_existing_companies(apps, existing_recommendations)
 
-    new_jobs = fetch_ai_job_recommendations(prompt, want, dont_want, location, saved_cv_text, target_count, seen_keys, seen_descriptions)
+    new_jobs = fetch_ai_job_recommendations(
+        prompt,
+        want,
+        dont_want,
+        location,
+        saved_cv_text,
+        target_count,
+        seen_keys,
+        seen_descriptions,
+        seen_companies,
+    )
     if ignored_sites:
         new_jobs = [job for job in new_jobs if normalize_site_host(job.get("official_url", "")) not in ignored_sites]
     if not new_jobs:
@@ -1158,6 +1253,14 @@ def render_dashboard(flash_message: str = "", active_tab: str = "feed") -> str:
     button {{ border: 0; border-radius: 10px; padding: 9px 12px; cursor: pointer; font-weight: 600; background: #21304f; color: var(--text); }}
     button:hover {{ filter: brightness(1.08); }}
     .primary {{ background: linear-gradient(135deg, #3b82f6, #2563eb); }}
+    .loading-overlay {{ position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(5, 10, 20, 0.72); backdrop-filter: blur(2px); z-index: 9999; }}
+    .loading-panel {{ width: min(520px, calc(100vw - 32px)); background: rgba(19, 26, 42, 0.98); border: 1px solid var(--border); border-radius: 16px; padding: 18px; box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35); }}
+    .loading-title {{ font-weight: 700; margin-bottom: 8px; }}
+    .loading-subtitle {{ color: var(--muted); font-size: 0.92rem; margin-bottom: 12px; }}
+    .loading-bar {{ width: 100%; height: 12px; border-radius: 999px; overflow: hidden; background: rgba(110, 168, 254, 0.14); border: 1px solid rgba(110, 168, 254, 0.25); }}
+    .loading-bar-fill {{ width: 40%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #3b82f6, #73e2a7); animation: loading-slide 1.1s ease-in-out infinite; }}
+    body.is-loading .loading-overlay {{ display: flex; }}
+    @keyframes loading-slide {{ 0% {{ transform: translateX(-120%); }} 100% {{ transform: translateX(320%); }} }}
     .notice, .flash {{ border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }}
     .notice {{ background: rgba(255, 207, 102, 0.1); border: 1px solid rgba(255, 207, 102, 0.35); color: #ffe7ac; }}
     .flash {{ background: rgba(115, 226, 167, 0.12); border: 1px solid rgba(115, 226, 167, 0.35); color: #cff7e4; }}
@@ -1181,6 +1284,13 @@ def render_dashboard(flash_message: str = "", active_tab: str = "feed") -> str:
   </style>
 </head>
 <body>
+  <div id=\"loading-overlay\" class=\"loading-overlay\" aria-live=\"polite\" aria-hidden=\"true\">
+    <div class=\"loading-panel\">
+      <div class=\"loading-title\">Searching jobs with {html.escape(get_api_config()[1])}…</div>
+      <div class=\"loading-subtitle\">Please wait while the dashboard checks the web for official company postings.</div>
+      <div class=\"loading-bar\"><div class=\"loading-bar-fill\"></div></div>
+    </div>
+  </div>
   <div class=\"container\">
     <div class=\"hero\">
       <div>
@@ -1204,7 +1314,7 @@ def render_dashboard(flash_message: str = "", active_tab: str = "feed") -> str:
         <h2>AI Job Search</h2>
         <div class=\"notice\">{api_status}</div>
         <p class=\"muted\">Save a reusable prompt, then search online for official job postings. Existing tracked jobs are filtered to avoid repeat recommendations.</p>
-        <form method=\"post\" action=\"/generate-recommendations\">
+        <form method=\"post\" action=\"/generate-recommendations\" id=\"job-search-form\">
           <input type=\"hidden\" name=\"tab\" value=\"{html.escape(active_tab, quote=True)}\">
           <textarea name=\"prompt\" placeholder=\"Describe the roles you want...\">{html.escape(saved_prompt)}</textarea>
           <div class=\"field-grid\">
@@ -1227,11 +1337,11 @@ def render_dashboard(flash_message: str = "", active_tab: str = "feed") -> str:
               <input id=\"location\" type=\"text\" name=\"location\" value=\"{html.escape(saved_location, quote=True)}\" placeholder=\"Seattle, Remote US, New York\">
             </div>
             <div>
-              <label for=\"result_count\">Results</label>
-              <input id=\"result_count\" type=\"text\" name=\"result_count\" value=\"{html.escape(saved_result_count, quote=True)}\" placeholder=\"5\">
+              <label for=\"result_count\">Results (min 10)</label>
+              <input id=\"result_count\" type=\"text\" name=\"result_count\" value=\"{html.escape(saved_result_count, quote=True)}\" placeholder=\"10\">
             </div>
           </div>
-          <div class=\"tiny muted\">Type tags in `Want` or `Don't want`, then use the add button or save button. Remove a tag by pressing its `×` chip below.</div>
+          <div class=\"tiny muted\">Type tags in `Want` or `Don't want`, then use the add button or save button. The search will request at least 10 results and remove repeat companies.</div>
           <div class=\"actions\">
             <button type=\"submit\" formaction=\"/save-prompt\" name=\"anchor\" value=\"ai-search-section\">Save Prompt + Filters</button>
             <button type=\"submit\" class=\"primary\" name=\"anchor\" value=\"recommendations-section\">Search Online for Jobs</button>
@@ -1342,6 +1452,25 @@ def render_dashboard(flash_message: str = "", active_tab: str = "feed") -> str:
       </div>
     </div>
   </div>
+  <script>
+    (() => {{
+      const form = document.getElementById("job-search-form");
+      const overlay = document.getElementById("loading-overlay");
+      if (!form || !overlay) {{
+        return;
+      }}
+
+      form.addEventListener("submit", (event) => {{
+        const submitter = event.submitter;
+        const action = (submitter?.getAttribute("formaction") || form.getAttribute("action") || "").toLowerCase();
+        if (action.includes("/save-prompt")) {{
+          return;
+        }}
+        document.body.classList.add("is-loading");
+        overlay.setAttribute("aria-hidden", "false");
+      }});
+    }})();
+  </script>
 </body>
 </html>
 """
