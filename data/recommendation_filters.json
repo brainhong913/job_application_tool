@@ -1,0 +1,14 @@
+{
+  "want": "python, AI, data",
+  "dont_want": "recuriting agent",
+  "location": "Europe, UK",
+  "want_tags": [
+    "python",
+    "AI",
+    "data"
+  ],
+  "dont_want_tags": [
+    "recuriting agent"
+  ],
+  "ignored_sites": []
+}

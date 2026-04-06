@@ -1,0 +1,78 @@
+I Cheong Hong
+Phone: +33 06 56 67 70 35
+E-mail: brainhong913@gmail.com
+PROFILE
+Award-winning particle physics PhD specialising in machine-learning–based neutrino reconstruc-
+tion. Experienced in deep learning, graph neural networks, and large-scale scientific data processing
+with strong foundations in statistics, optimisation, and GPU/HPC computing. Motivated to ap-
+ply quantitative and analytical skills to financial modelling, research, and data-driven strategy
+development.
+PHD RESEARCH SUMMARY
+Developed machine-learning and graph-based models to reconstruct neutrino interactions in large-
+scale particle detectors (DUNE). Contributed to algorithm design, large-scale data analysis, model
+training, likelihood-based evaluation, and performance studies.
+CORE SKILLS
+Programming:Python (NumPy, Pandas, Polars), PyTorch, C++, Bash, Git, Linux
+Machine Learning:CNNs, Graph Neural Networks (GraphSAGE, GAT, EdgeConv), optimisa-
+tion, model evaluation
+Data & HPC:Large-scale data processing, GPU clusters, SLURM, cloud GPU environments
+Quantitative:Probability, statistics, physics & mathematical modelling, Bayesian inference
+Tools:LaTeX, ROOT, Jupyter, Docker/Apptainer
+EDUCATION
+CNRS–University of Chicago Joint PhD in Particle Physics2023–2026
+Astroparticule et Cosmologie Laboratory (APC), Universit´ e Paris Cit´ e
+Thesis: Machine-learning–based neutrino reconstruction for the DUNE experiment. Includes large-
+scale data analysis, GPU/HPC computing, and statistical modelling.
+Imperial College London2021–2022
+MSc in Quantum Fields and Fundamental Forces
+Modules: Theoretical Particle Physics, Standard Model, Advanced QFT, QED, String Theory,
+Supersymmetry.
+University College London (UCL)2018–2021
+BSc Theoretical Physics — First Class Honours
+Modules: Particle Physics, Theoretical Physics, Scientific Programming, Data Analysis.
+Yuet Wah College, Macau2012–2018
+A-levels: Physics (A), Mathematics (A), Chemistry (A)
+EXPERIENCE
+Machine Learning for Neutrino Reconstruction (DUNE)2023–Present
+APC (CNRS / Universit´ e Paris Cit´ e)
+•Designed and trained deep learning models (CNNs, GNNs) for vertex reconstruction in DUNE.
+•Built full data pipelines for Monte Carlo and detector simulations using Python, C++, and
+LArSoft.
+•Performed large-scale GPU training on HPC clusters (SLURM), optimising performance and
+resource usage.
+•Developed statistical evaluation tools including uncertainty estimation and benchmark metrics.
+•Delivered technical presentations at CERN, Fermilab, and DUNE collaboration meetings.
+Probabilistic Inference on Noisy Time Series2021
+University of Macau / Oxford / Nottingham
+1
+
+•Built SEIRD epidemic ODE models and inferred parameters via Bayesian inference and MCMC.
+Higgs Boson Classification via Machine Learning2020–2021
+UCL
+•Applied ML to ATLAS datasets; improved sensitivity by 200% using optimisation techniques.
+Enhanced Growth Neural Gas (Research Assistant)2019
+University of Macau
+•Analysed neural data using PCA and neural gas algorithms; developed an optimised GUI.
+WORK EXPERIENCE
+Private A-level Physics Tutor2018–Present
+•One-to-one tutoring; improved students from failing grades to Grade A.
+UCL Physics Society — First-Year Representative2018–2019
+•Organised events including a physics-themed escape room and departmental open days.
+Treasurer, Macau Students Association (UK)2019–2020
+•Managed budgets, sponsorships, and financial reporting for 100+ members.
+A W ARDS AND SCHOLARSHIPS
+•Funda¸ c˜ ao Macau Outstanding Student Scholarship (2019–2021) — full competitive scholarship.
+•Chinese National Olympic Applied Physics — First Class Award.
+•Pan Pearl Regional Physics Olympiad — Second Class Award.
+•Macau Interschool Chinese Debate — Silver Medal.
+•International Young Physicists’ Tournament — Macau representative.
+COMMUNICATION
+•Poster presentation atNeutrino 2024, Milano.
+•Technical talks atDUNE Collaboration Meetings(CERN, Fermilab).
+•Oral presentation atJRJC 2024, France.
+•Presentation at theIRN Neutrinoworkshop.
+EXTRA-CURRICULAR
+•Interests:Historical European Martial Arts (HEMA), Chinese Kung Fu, swimming, piano
+(Grade 7), physics outreach, competitive gaming.
+•Societies:UCL Physics Society, Imperial Physics Society, Macau Students Association (UK).
+2
