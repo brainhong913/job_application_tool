@@ -1,14 +1,19 @@
 {
   "want": "python, AI, data",
-  "dont_want": "recuriting agent",
+  "dont_want": "recruiting agent, third-party job boards",
   "location": "Europe, UK",
+  "result_count": "5",
   "want_tags": [
     "python",
     "AI",
     "data"
   ],
   "dont_want_tags": [
-    "recuriting agent"
+    "recruiting agent",
+    "third-party job boards"
   ],
-  "ignored_sites": []
+  "ignored_sites": [
+    "careers.microsoft.com",
+    "careers.salesforce.com"
+  ]
 }

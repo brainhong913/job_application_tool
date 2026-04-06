@@ -73,6 +73,53 @@ UNOFFICIAL_HOST_FRAGMENTS = {
     "remotefirstjobs.com",
     "nodesk.co",
     "remote.co",
+    "totaljobs.com",
+    "artificialintelligencejobs.co.uk",
+    "huntukvisasponsors.com",
+    "visasponsor.jobs",
+    "reed.co.uk",
+    "cv-library.co.uk",
+    "adzuna.",
+    "jooble.",
+}
+KNOWN_ATS_HOST_FRAGMENTS = {
+    "greenhouse.io",
+    "lever.co",
+    "ashbyhq.com",
+    "myworkdayjobs.com",
+    "workdayjobs.com",
+    "smartrecruiters.com",
+    "jobvite.com",
+    "icims.com",
+    "workable.com",
+    "bamboohr.com",
+}
+THIRD_PARTY_HOST_HINTS = {
+    "recruit",
+    "recruiting",
+    "recruiter",
+    "staffing",
+    "agency",
+    "headhunt",
+    "talent",
+    "sponsor",
+    "visa",
+}
+COMMON_COMPANY_WORDS = {
+    "the",
+    "and",
+    "inc",
+    "incorporated",
+    "llc",
+    "ltd",
+    "limited",
+    "corp",
+    "corporation",
+    "company",
+    "co",
+    "group",
+    "technology",
+    "technologies",
 }
 
 
@@ -100,7 +147,13 @@ def write_rows(path: Path, headers: list[str], rows: list[dict[str, str]]) -> No
 
 def read_recommendation_rows() -> list[dict[str, str]]:
     ensure_support_files()
-    return read_rows(RECOMMENDATIONS_FILE)
+    rows = read_rows(RECOMMENDATIONS_FILE)
+    filtered_rows = [
+        row for row in rows if is_official_job_url(row.get("official_url", ""), row.get("company", ""))
+    ]
+    if len(filtered_rows) != len(rows):
+        write_rows(RECOMMENDATIONS_FILE, RECOMMENDATION_HEADERS, filtered_rows)
+    return filtered_rows
 
 
 def load_saved_prompt() -> str:
@@ -217,6 +270,7 @@ def load_saved_filters() -> dict[str, str | list[str]]:
             "want": "",
             "dont_want": "",
             "location": "",
+            "result_count": "5",
             "want_tags": [],
             "dont_want_tags": [],
             "ignored_sites": [],
@@ -225,10 +279,12 @@ def load_saved_filters() -> dict[str, str | list[str]]:
     want_tags = normalize_tag_values(payload.get("want_tags", payload.get("want", "")))
     dont_want_tags = normalize_tag_values(payload.get("dont_want_tags", payload.get("dont_want", "")))
     ignored_sites = normalize_tag_values(payload.get("ignored_sites", []))
+    result_count = str(payload.get("result_count", "5")).strip() or "5"
     return {
         "want": ", ".join(want_tags),
         "dont_want": ", ".join(dont_want_tags),
         "location": str(payload.get("location", "")).strip(),
+        "result_count": result_count,
         "want_tags": want_tags,
         "dont_want_tags": dont_want_tags,
         "ignored_sites": ignored_sites,
@@ -240,6 +296,7 @@ def save_filters(
     dont_want: str | list[str],
     location: str = "",
     ignored_sites: str | list[str] | None = None,
+    result_count: str | int | None = None,
 ) -> None:
     ensure_support_files()
     want_tags = normalize_tag_values(want)
@@ -247,10 +304,16 @@ def save_filters(
     existing_filters = load_saved_filters()
     saved_ignored_sites = existing_filters.get("ignored_sites", []) if ignored_sites is None else ignored_sites
     clean_ignored_sites = normalize_tag_values(saved_ignored_sites)
+    clean_result_count = str(result_count if result_count is not None else existing_filters.get("result_count", "5")).strip() or "5"
+    try:
+        count_number = max(1, min(20, int(clean_result_count)))
+    except ValueError:
+        count_number = 5
     payload = {
         "want": ", ".join(want_tags),
         "dont_want": ", ".join(dont_want_tags),
         "location": location.strip(),
+        "result_count": str(count_number),
         "want_tags": want_tags,
         "dont_want_tags": dont_want_tags,
         "ignored_sites": clean_ignored_sites,
@@ -372,6 +435,11 @@ def normalize_job_key(company: str, role: str, url: str) -> str:
     return f"{company_part}|{role_part}|{url_part}"
 
 
+def company_name_tokens(company: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]+", (company or "").lower())
+    return [token for token in tokens if len(token) > 2 and token not in COMMON_COMPANY_WORDS]
+
+
 def collect_existing_jobs(apps: list[dict[str, str]], recommendations: list[dict[str, str]]) -> tuple[set[str], list[str]]:
     keys: set[str] = set()
     descriptions: list[str] = []
@@ -470,11 +538,35 @@ def parse_jobs_from_response(text: str) -> list[dict[str, str]]:
     return parsed_jobs
 
 
-def is_official_job_url(url: str) -> bool:
-    host = urllib.parse.urlparse(url).netloc.lower()
+def is_official_job_url(url: str, company: str = "") -> bool:
+    parsed = urllib.parse.urlparse((url or "").strip())
+    host = normalize_site_host(url)
+    path = parsed.path.lower()
+    query = parsed.query.lower()
+    combined = f"{host}{path}?{query}"
     if not host:
         return False
-    return not any(fragment in host for fragment in UNOFFICIAL_HOST_FRAGMENTS)
+
+    if any(fragment in combined for fragment in UNOFFICIAL_HOST_FRAGMENTS):
+        return False
+    if any(hint in host for hint in THIRD_PARTY_HOST_HINTS):
+        return False
+
+    company_tokens = company_name_tokens(company)
+    has_company_match = any(token in combined for token in company_tokens)
+
+    if any(host.endswith(fragment) for fragment in KNOWN_ATS_HOST_FRAGMENTS):
+        if host.startswith("job-boards.") or (host.startswith("boards.") and path.startswith("/embed/")):
+            return False
+        return has_company_match if company_tokens else True
+
+    if any(word in host for word in {"jobs", "job", "boards", "board"}) and not has_company_match:
+        return False
+
+    if company_tokens and any(word in host for word in {"careers", "career", "talent", "hiring"}):
+        return has_company_match
+
+    return True
 
 
 def fetch_ai_job_recommendations(
@@ -483,6 +575,7 @@ def fetch_ai_job_recommendations(
     dont_want: str,
     location: str,
     cv_text: str,
+    result_count: int,
     seen_keys: set[str],
     seen_descriptions: list[str],
 ) -> list[dict[str, str]]:
@@ -495,14 +588,15 @@ def fetch_ai_job_recommendations(
         "Search the public web for current job openings and return ONLY JSON in this exact shape: "
         '{"jobs":[{"company":"","role":"","location":"","official_url":"","reason":"","source":""}]}\n'
         "Rules:\n"
-        "- The official_url must be either a company careers page or an official ATS link such as Greenhouse, Lever, or Ashby.\n"
-        "- Do NOT return job-board or aggregator links such as Indeed, LinkedIn Jobs, Wellfound, Glassdoor, NoDesk, or similar sites.\n"
+        "- The official_url must be either a direct company careers page or an official company ATS link such as Greenhouse, Lever, Workday, or Ashby.\n"
+        "- Do NOT return job-board, recruiting-agency, visa-sponsorship directory, or aggregator links such as Indeed, LinkedIn Jobs, Wellfound, Glassdoor, TotalJobs, AI job boards, recruiter websites, or similar sites.\n"
+        "- Reject generic ATS wrappers like `boards.greenhouse.io/embed/...` or `job-boards.*` unless the link is clearly company-specific and official.\n"
         "- Use the candidate CV/resume details to match role level, skills, tools, and domain experience when available.\n"
         "- Strongly prefer roles that match the user's `Want` filters.\n"
         "- Avoid roles, industries, and work styles listed in the user's `Don't want` filters.\n"
         "- If a preferred location is provided, prioritize jobs in that location or remote roles compatible with it.\n"
         "- Avoid any company-role-url combination that already appears in the tracked list.\n"
-        "- Return at most 5 results.\n"
+        f"- Return exactly {result_count} results when possible; if fewer real official matches exist, return only the available ones.\\n"
         "- Keep each reason short and practical.\n"
         "- Focus on roles that match the user's prompt and look currently open."
     )
@@ -573,7 +667,11 @@ def fetch_ai_job_recommendations(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Network error while calling OpenAI: {exc.reason}") from exc
 
-    jobs = [item for item in parse_jobs_from_response(extract_output_text(response_payload)) if is_official_job_url(item["official_url"])]
+    jobs = [
+        item
+        for item in parse_jobs_from_response(extract_output_text(response_payload))
+        if is_official_job_url(item["official_url"], item.get("company", ""))
+    ]
     if not jobs:
         raise RuntimeError("OpenAI only returned third-party job-board links. Try again with a narrower prompt.")
 
@@ -594,17 +692,22 @@ def generate_recommendations(
     want: str = "",
     dont_want: str = "",
     location: str = "",
+    result_count: str = "5",
 ) -> tuple[int, str]:
     save_prompt(prompt)
-    save_filters(want, dont_want, location)
+    save_filters(want, dont_want, location, result_count=result_count)
     saved_cv_text = load_saved_cv_text()
     saved_filters = load_saved_filters()
     ignored_sites = {str(site).lower() for site in saved_filters.get("ignored_sites", [])}
+    try:
+        target_count = max(1, min(20, int(str(result_count).strip() or saved_filters.get("result_count", "5"))))
+    except ValueError:
+        target_count = 5
     apps = read_rows(APPLICATIONS_FILE)
     existing_recommendations = read_recommendation_rows()
     seen_keys, seen_descriptions = collect_existing_jobs(apps, existing_recommendations)
 
-    new_jobs = fetch_ai_job_recommendations(prompt, want, dont_want, location, saved_cv_text, seen_keys, seen_descriptions)
+    new_jobs = fetch_ai_job_recommendations(prompt, want, dont_want, location, saved_cv_text, target_count, seen_keys, seen_descriptions)
     if ignored_sites:
         new_jobs = [job for job in new_jobs if normalize_site_host(job.get("official_url", "")) not in ignored_sites]
     if not new_jobs:
@@ -904,7 +1007,7 @@ def render_recommendation_table(rows: list[dict[str, str]], active_tab: str) -> 
         table_rows.append(
             "<tr>"
             f"<td>{html.escape(row.get('date_added', '') or '—')}</td>"
-            f"<td>{html.escape(row.get('company', '') or '—')}</td>"
+            f"<td><div class=\"company-name\">{html.escape(row.get('company', '') or '—')}</div></td>"
             f"<td>{html.escape(row.get('role', '') or '—')}</td>"
             f"<td>{html.escape(row.get('location', '') or '—')}</td>"
             f"<td>{link_html}<div class=\"tiny muted\">{source}</div></td>"
@@ -934,6 +1037,7 @@ def render_dashboard(flash_message: str = "", active_tab: str = "feed") -> str:
     saved_want = str(saved_filters.get("want", ""))
     saved_dont_want = str(saved_filters.get("dont_want", ""))
     saved_location = str(saved_filters.get("location", ""))
+    saved_result_count = str(saved_filters.get("result_count", "5"))
     saved_want_tags = list(saved_filters.get("want_tags", []))
     saved_dont_want_tags = list(saved_filters.get("dont_want_tags", []))
     saved_ignored_sites = list(saved_filters.get("ignored_sites", []))
@@ -1028,6 +1132,7 @@ def render_dashboard(flash_message: str = "", active_tab: str = "feed") -> str:
     .pill {{ padding: 6px 10px; border-radius: 999px; background: rgba(110, 168, 254, 0.12); border: 1px solid rgba(110, 168, 254, 0.35); color: #dbe8ff; font-size: 0.9rem; }}
     .pill-warn {{ background: rgba(255, 120, 120, 0.12); border-color: rgba(255, 120, 120, 0.35); color: #ffd6d6; }}
     .muted, .empty {{ color: var(--muted); }}
+    .company-name {{ font-weight: 700; color: #ffffff; font-size: 1rem; }}
     .tiny {{ font-size: 0.82rem; margin-top: 6px; }}
     ul {{ margin: 0; padding-left: 18px; }}
     li {{ margin: 8px 0; }}
@@ -1120,6 +1225,10 @@ def render_dashboard(flash_message: str = "", active_tab: str = "feed") -> str:
             <div>
               <label for=\"location\">Location</label>
               <input id=\"location\" type=\"text\" name=\"location\" value=\"{html.escape(saved_location, quote=True)}\" placeholder=\"Seattle, Remote US, New York\">
+            </div>
+            <div>
+              <label for=\"result_count\">Results</label>
+              <input id=\"result_count\" type=\"text\" name=\"result_count\" value=\"{html.escape(saved_result_count, quote=True)}\" placeholder=\"5\">
             </div>
           </div>
           <div class=\"tiny muted\">Type tags in `Want` or `Don't want`, then use the add button or save button. Remove a tag by pressing its `×` chip below.</div>
@@ -1330,7 +1439,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             if parsed.path == "/save-prompt":
                 save_prompt(form.get("prompt", ""))
-                save_filters(form.get("want", ""), form.get("dont_want", ""), form.get("location", ""))
+                save_filters(
+                    form.get("want", ""),
+                    form.get("dont_want", ""),
+                    form.get("location", ""),
+                    result_count=form.get("result_count", "5"),
+                )
                 self._redirect_with_message("Saved the AI job-search prompt and filters.", target_tab, target_anchor)
                 return
 
@@ -1340,6 +1454,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     form.get("want", ""),
                     form.get("dont_want", ""),
                     form.get("location", ""),
+                    form.get("result_count", "5"),
                 )
                 self._redirect_with_message(message, target_tab, target_anchor)
                 return
